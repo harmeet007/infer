@@ -1644,5 +1644,75 @@ namespace Microsoft.ML.Probabilistic.Tests
 
             Assert.True(inferredSkills[3].GetMean() > inferredSkills[4].GetMean());
         }
+
+        [Fact]
+        public void TrueSkillMsdnMagazineTest()
+        {
+            // Model: plates skeleton
+            var playerCount = Variable.New<int>();
+            var player = new Range(playerCount);
+            var gameCount = Variable.New<int>();
+            var game = new Range(gameCount);
+
+            // Model: player plate
+            var playerSkills = Variable.Array<double>(player);
+            var playerSkillsPrior = Variable.Array<Gaussian>(player);
+            using (Variable.ForEach(player))
+            {
+                playerSkills[player] = Variable<double>.Random(playerSkillsPrior[player]);
+            }
+
+            // Model: game plate
+            var players1 = Variable.Array<int>(game);
+            var players2 = Variable.Array<int>(game);
+            var player1Wins = Variable.Array<bool>(game);
+            const double noise = 1.0;
+            using (Variable.ForEach(game))
+            {
+                var player1Skill = playerSkills[players1[game]];
+                var player1Performance = Variable.GaussianFromMeanAndVariance(player1Skill, noise);
+                var player2Skill = playerSkills[players2[game]];
+                var player2Performance = Variable.GaussianFromMeanAndVariance(player2Skill, noise);
+                player1Wins[game] = player1Performance > player2Performance;
+            }
+
+            // Training: set priors
+            const int PlayerCount = 4;
+            playerSkillsPrior.ObservedValue = Enumerable.Repeat(Gaussian.FromMeanAndVariance(6, 9), PlayerCount).ToArray();
+
+            // Training: observe data
+            playerCount.ObservedValue = PlayerCount;
+            gameCount.ObservedValue = 3;
+            players1.ObservedValue = new[] { 0, 1, 3 };
+            players2.ObservedValue = new[] { 1, 2, 2 };
+            player1Wins.ObservedValue = new[] { true, true, true };
+
+            // Training: run inference
+            var inferenceEngine = new InferenceEngine();
+            var inferredSkills = inferenceEngine.Infer<Gaussian[]>(playerSkills);
+
+            // The inferred skills are uncertain, which is captured in their variance
+            var orderedPlayerSkills = inferredSkills
+                .Select((s, i) => new { Player = i, Skill = s })
+                .OrderByDescending(ps => ps.Skill.GetMean());
+            foreach (var playerSkill in orderedPlayerSkills)
+            {
+                Console.WriteLine($"Player {playerSkill.Player} skill: {playerSkill.Skill}");
+            }
+
+            // Prediction: set priors
+            playerSkillsPrior.ObservedValue = inferredSkills;
+
+            // Prediction: observe data
+            gameCount.ObservedValue = 1;
+            players1.ObservedValue = new[] { 0 };
+            players2.ObservedValue = new[] { 3 };
+            player1Wins.ClearObservedValue();
+
+            // Prediction: run inference
+            var player0Vs3 = inferenceEngine.Infer<Bernoulli[]>(player1Wins).First();
+
+            Assert.True(player0Vs3.GetProbTrue() > 0.5);
+        }
     }
 }
